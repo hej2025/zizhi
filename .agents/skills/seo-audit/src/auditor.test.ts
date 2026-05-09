@@ -1,0 +1,131 @@
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { createAuditor, Auditor } from './index.js';
+import { categories } from './categories/index.js';
+
+const PAGE_URL = 'https://example.test/';
+
+const FIXTURE_HTML = `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Integration Test Page</title>
+  <meta name="description" content="Fixture page for the programmatic Auditor integration test.">
+  <link rel="canonical" href="${PAGE_URL}">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+</head>
+<body>
+  <h1>Integration Test Page</h1>
+  <p>Body content for the audit fixture.</p>
+</body>
+</html>`;
+
+function makeFetchStub() {
+  return vi.fn(async (input: RequestInfo | URL): Promise<Response> => {
+    const url = typeof input === 'string' ? input : input.toString();
+    if (url === PAGE_URL) {
+      return new Response(FIXTURE_HTML, {
+        status: 200,
+        headers: { 'content-type': 'text/html; charset=utf-8' },
+      });
+    }
+    // robots.txt and sitemap.xml — auditor catches and ignores failures
+    return new Response('', { status: 404 });
+  });
+}
+
+describe('Programmatic API (createAuditor / Auditor)', () => {
+  let fetchStub: ReturnType<typeof makeFetchStub>;
+
+  beforeEach(() => {
+    fetchStub = makeFetchStub();
+    vi.stubGlobal('fetch', fetchStub);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('exports createAuditor and Auditor from the package entry', () => {
+    expect(typeof createAuditor).toBe('function');
+    expect(typeof Auditor).toBe('function');
+  });
+
+  it('defaults to all 20 categories when no filter is given', () => {
+    const auditor = createAuditor();
+    expect(auditor.getCategoriesToAudit()).toHaveLength(categories.length);
+    expect(categories.length).toBe(20);
+  });
+
+  it('filters categories when categories option is provided', () => {
+    const auditor = createAuditor({ categories: ['core', 'security'] });
+    const ids = auditor.getCategoriesToAudit().map((c) => c.id);
+    expect(ids).toEqual(['core', 'security']);
+  });
+
+  it('audit() returns an AuditResult with the documented shape', async () => {
+    const auditor = createAuditor({ categories: ['core'], measureCwv: false });
+    const result = await auditor.audit(PAGE_URL);
+
+    expect(result.url).toBe(PAGE_URL);
+    expect(typeof result.overallScore).toBe('number');
+    expect(result.overallScore).toBeGreaterThanOrEqual(0);
+    expect(result.overallScore).toBeLessThanOrEqual(100);
+    expect(typeof result.timestamp).toBe('string');
+    expect(() => new Date(result.timestamp)).not.toThrow();
+    expect(result.crawledPages).toBe(1);
+
+    expect(Array.isArray(result.categoryResults)).toBe(true);
+    expect(result.categoryResults).toHaveLength(1);
+
+    const core = result.categoryResults[0];
+    expect(core.categoryId).toBe('core');
+    expect(core.score).toBeGreaterThanOrEqual(0);
+    expect(core.score).toBeLessThanOrEqual(100);
+    expect(core.passCount + core.warnCount + core.failCount).toBe(core.results.length);
+    expect(core.results.length).toBeGreaterThan(0);
+
+    for (const ruleResult of core.results) {
+      expect(['pass', 'warn', 'fail']).toContain(ruleResult.status);
+      expect(ruleResult.ruleId).toMatch(/^core-/);
+      expect(ruleResult.details?.pageUrl).toBe(PAGE_URL);
+    }
+  });
+
+  it('fires lifecycle callbacks in the documented order', async () => {
+    const events: string[] = [];
+    const auditor = createAuditor({
+      categories: ['core'],
+      measureCwv: false,
+      onCategoryStart: (id) => events.push(`start:${id}`),
+      onRuleComplete: (ruleId) => events.push(`rule:${ruleId}`),
+      onCategoryComplete: (id) => events.push(`complete:${id}`),
+    });
+
+    await auditor.audit(PAGE_URL);
+
+    expect(events[0]).toBe('start:core');
+    expect(events[events.length - 1]).toBe('complete:core');
+    const ruleEvents = events.filter((e) => e.startsWith('rule:'));
+    expect(ruleEvents.length).toBeGreaterThan(0);
+    // Every rule:* event must sit between start:core and complete:core
+    const startIdx = events.indexOf('start:core');
+    const completeIdx = events.indexOf('complete:core');
+    for (let i = 0; i < events.length; i++) {
+      if (events[i].startsWith('rule:')) {
+        expect(i).toBeGreaterThan(startIdx);
+        expect(i).toBeLessThan(completeIdx);
+      }
+    }
+  });
+
+  it('issues exactly one HTTP fetch for the audited URL', async () => {
+    const auditor = createAuditor({ categories: ['core'], measureCwv: false });
+    await auditor.audit(PAGE_URL);
+
+    const pageFetches = fetchStub.mock.calls.filter(([input]) => {
+      const url = typeof input === 'string' ? input : (input as URL | Request).toString();
+      return url === PAGE_URL;
+    });
+    expect(pageFetches).toHaveLength(1);
+  });
+});
