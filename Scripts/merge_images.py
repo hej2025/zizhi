@@ -116,9 +116,7 @@ def collect_images(input_dir: str, min_size: int = MIN_FILE_SIZE):
     if subdirs_with_images:
         has_subdirs = True
         subdirs_with_images.sort(key=natural_sort_key)
-        total_subdirs = len(subdirs_with_images)
-        for i, subdir in enumerate(subdirs_with_images, 1):
-            print(f"  [{i}/{total_subdirs}] 收集子目录: {subdir}...")
+        for subdir in subdirs_with_images:
             subdir_path = os.path.join(input_dir, subdir)
             files = []
             try:
@@ -134,7 +132,6 @@ def collect_images(input_dir: str, min_size: int = MIN_FILE_SIZE):
             except OSError:
                 continue
             files.sort(key=natural_sort_key)
-            print(f"         -> 找到 {len(files)} 张图片")
             for f in files:
                 image_paths.append(os.path.join(subdir_path, f))
     elif direct_images:
@@ -163,8 +160,8 @@ def create_page_pdf(page_images, final_width, output_path, show_progress=False):
     total = len(page_images)
 
     for i, (filepath, _, _) in enumerate(page_images, 1):
-        if show_progress and (i == 1 or i == total or i % 50 == 0):
-            print(f"    [{i}/{total}] 拼接中...")
+        if show_progress and (i == 1 or i == total or i % 200 == 0):
+            print(f"  [{i}/{total}] 拼接中...")
         img = Image.open(filepath)
         if img.mode in ('RGBA', 'P'):
             img = img.convert('RGB')
@@ -197,7 +194,7 @@ def merge_pdfs(pdf_files, output_path):
         from pypdf import PdfWriter
         writer = PdfWriter()
         for i, pdf in enumerate(pdf_files, 1):
-            if show_merge_progress and (i == 1 or i == total or i % 10 == 0):
+            if show_merge_progress and (i == 1 or i == total or i % 50 == 0):
                 print(f"  [{i}/{total}] 合并页面...")
             writer.append(pdf)
         with open(output_path, 'wb') as f:
@@ -211,7 +208,7 @@ def merge_pdfs(pdf_files, output_path):
         from PyPDF2 import PdfMerger
         merger = PdfMerger()
         for i, pdf in enumerate(pdf_files, 1):
-            if show_merge_progress and (i == 1 or i == total or i % 10 == 0):
+            if show_merge_progress and (i == 1 or i == total or i % 50 == 0):
                 print(f"  [{i}/{total}] 合并页面...")
             merger.append(pdf)
         merger.write(output_path)
@@ -287,9 +284,9 @@ def build_pdf(input_dir: str, output_pdf: str, width: int = None,
     max_width = 0
     skipped = 0
     total_images = len(image_paths)
-    show_read_progress = total_images > 200
+    show_read_progress = total_images > 500
     for idx, fp in enumerate(image_paths, 1):
-        if show_read_progress and (idx % 100 == 0 or idx == total_images):
+        if show_read_progress and (idx % 500 == 0 or idx == total_images):
             print(f"  [{idx}/{total_images}] 读取尺寸中...")
         try:
             with Image.open(fp) as img:

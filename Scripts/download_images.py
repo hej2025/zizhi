@@ -38,6 +38,7 @@ import argparse
 import concurrent.futures
 import os
 import re
+import socket
 import ssl
 import sys
 import threading
@@ -52,6 +53,7 @@ DELAY_PER_IMAGE = 0.3        # 每张图片间隔（秒，串行模式，可通�
 DELAY_PER_CHAPTER = 1.0      # 每章间隔（秒）
 MAX_CONSECUTIVE_404 = 5      # 连续404停止阈值（仅探测模式生效）
 REQUEST_TIMEOUT = 15         # 请求超时（秒）
+REQUEST_TIMEOUT_RETRY = 30   # 重试时的请求超时（秒，适当延长）
 MAX_RETRY = 3                # 单张图片重试次数
 IMAGE_PAD_WIDTH = 3          # 文件名编号位数 (001, 002, ...)
 DEFAULT_WORKERS = 8          # 每章并行下载线程数
@@ -61,6 +63,7 @@ RETRYABLE_HTTP_CODES = {429, 500, 502, 503, 504}  # 可重试的HTTP状态码
 RETRY_PASS_MAX = 3           # 失败图片补漏轮次
 RETRY_PASS_DELAY = 5         # 补漏轮次间等待（秒）
 PROBE_BEYOND_COUNT = 10      # 超出已知图片数的探测余量
+HTML_FETCH_RETRY = 3         # 网页HTML获取重试次数
 
 # ── SSL ───────────────────────────────────────────────────
 SSL_CTX = ssl.create_default_context()
@@ -86,20 +89,72 @@ def extract_domain(url: str) -> str:
     return m.group(1) if m else "https://www.uutoonman.com"
 
 
-def fetch_html(url: str) -> str:
-    """获取网页 HTML 内容（分块读取，防止 chunked transfer 挂死）"""
-    req = urllib.request.Request(url, headers=HEADERS)
-    with urllib.request.urlopen(req, context=SSL_CTX, timeout=REQUEST_TIMEOUT) as resp:
-        chunks = []
-        while True:
-            try:
-                chunk = resp.read(8192)
-                if not chunk:
-                    break
-                chunks.append(chunk)
-            except Exception:
-                break
-        return b"".join(chunks).decode("utf-8", errors="ignore")
+def fetch_html(url: str, retry_count: int = HTML_FETCH_RETRY) -> str:
+    """获取网页 HTML 内容（分块读取，防止 chunked transfer 挂死）
+    
+    Args:
+        url: 目标URL
+        retry_count: 重试次数（默认使用全局配置）
+    
+    Returns:
+        HTML内容字符串
+    
+    Raises:
+        Exception: 当所有重试都失败时抛出最后一次异常
+    """
+    last_exception = None
+    
+    for attempt in range(retry_count):
+        try:
+            # 首次使用标准超时，重试时使用更长超时
+            timeout = REQUEST_TIMEOUT if attempt == 0 else REQUEST_TIMEOUT_RETRY
+            req = urllib.request.Request(url, headers=HEADERS)
+            
+            with urllib.request.urlopen(req, context=SSL_CTX, timeout=timeout) as resp:
+                chunks = []
+                while True:
+                    try:
+                        chunk = resp.read(8192)
+                        if not chunk:
+                            break
+                        chunks.append(chunk)
+                    except (socket.timeout, Exception):
+                        break
+                
+                html_content = b"".join(chunks).decode("utf-8", errors="ignore")
+                
+                # 验证获取到的内容是否有效
+                if len(html_content) < 100:
+                    raise ValueError(f"获取的HTML内容过短 ({len(html_content)} bytes)，可能下载不完整")
+                
+                if attempt > 0:
+                    print(f"    [OK] 页面获取成功（重试{attempt}次后）")
+                return html_content
+                
+        except urllib.error.HTTPError as e:
+            last_exception = e
+            if attempt < retry_count - 1:
+                backoff = RETRY_BACKOFF[min(attempt, len(RETRY_BACKOFF) - 1)]
+                time.sleep(backoff)
+            continue
+            
+        except (urllib.error.URLError, socket.timeout):
+            last_exception = sys.exc_info()[1]
+            if attempt < retry_count - 1:
+                backoff = RETRY_BACKOFF[min(attempt, len(RETRY_BACKOFF) - 1)]
+                time.sleep(backoff)
+            continue
+            
+        except Exception as e:
+            last_exception = e
+            if attempt < retry_count - 1:
+                backoff = RETRY_BACKOFF[min(attempt, len(RETRY_BACKOFF) - 1)]
+                time.sleep(backoff)
+            continue
+    
+    # 所有重试都失败，打印最终错误
+    print(f"    [ERR] 页面获取失败（已重试{retry_count}次）: {last_exception}")
+    raise last_exception or Exception(f"获取HTML失败，已重试{retry_count}次")
 
 
 def sanitize_filename(name: str) -> str:
@@ -289,51 +344,56 @@ def fetch_chapter_detail(chapter_url: str) -> dict:
 #  图片下载
 # ═══════════════════════════════════════════════════════════
 
-def download_image(url: str, filepath: str, extra_retry: int = 0) -> str:
-    """下载单张图片，返回结果类型。
-    返回: "ok" | "404" | "failed"
+def download_image(url: str, filepath: str, extra_retry: int = 0) -> tuple:
+    """下载单张图片，返回 (结果, 重试次数)。
+    结果: "ok" | "404" | "failed"
     extra_retry: 额外重试次数（用于补漏轮次）
     """
     total_attempts = MAX_RETRY + 1 + extra_retry
+    retry_count = 0
     for attempt in range(total_attempts):
         try:
+            # 重试时使用更长的超时
+            timeout = REQUEST_TIMEOUT if attempt == 0 else REQUEST_TIMEOUT_RETRY
             req = urllib.request.Request(url, headers=HEADERS)
-            with urllib.request.urlopen(req, context=SSL_CTX, timeout=REQUEST_TIMEOUT) as resp:
+            with urllib.request.urlopen(req, context=SSL_CTX, timeout=timeout) as resp:
                 data = resp.read()
                 # 验证文件是否有效（非空且非HTML错误页）
                 if len(data) < 50 or b'<html' in data[:200].lower():
-                    return "failed"
+                    return ("failed", retry_count)
                 with open(filepath, "wb") as f:
                     f.write(data)
-                return "ok"
+                return ("ok", retry_count)
         except urllib.error.HTTPError as e:
             # 404 = 文件不存在，不重试
             if e.code == 404:
-                return "404"
-            if e.code in RETRYABLE_HTTP_CODES and attempt < total_attempts - 1:
-                backoff = RETRY_BACKOFF[min(attempt, len(RETRY_BACKOFF) - 1)]
-                print(f"    [RETRY] {os.path.basename(filepath)} HTTP {e.code}, {backoff}s后重试({attempt+1}/{total_attempts})")
-                time.sleep(backoff)
-                continue
-            # 其他HTTP错误（如403），也尝试重试
+                return ("404", retry_count)
+            retry_count += 1
             if attempt < total_attempts - 1:
                 backoff = RETRY_BACKOFF[min(attempt, len(RETRY_BACKOFF) - 1)]
                 time.sleep(backoff)
                 continue
-            print(f"    [ERR] {os.path.basename(filepath)} - HTTP {e.code}")
-            return "failed"
-        except Exception as e:
+            return ("failed", retry_count)
+        except (socket.timeout, urllib.error.URLError) as e:
+            # 超时类错误统一处理
+            retry_count += 1
+            if attempt < total_attempts - 1:
+                backoff = RETRY_BACKOFF[min(attempt, len(RETRY_BACKOFF) - 1)]
+                time.sleep(backoff)
+                continue
+            return ("failed", retry_count)
+        except Exception:
+            retry_count += 1
             if attempt < total_attempts - 1:
                 backoff = RETRY_BACKOFF[min(attempt, len(RETRY_BACKOFF) - 1)]
                 time.sleep(backoff)
             else:
-                print(f"    [ERR] {os.path.basename(filepath)} - {e}")
-                return "failed"
-    return "failed"
+                return ("failed", retry_count)
+    return ("failed", retry_count)
 
 
 def _download_one_image(i: int, manga_id: str, chapter_id: str, ch_dir: str) -> tuple:
-    """下载单张图片的线程任务，返回 (序号, 结果, 文件路径[, URL])
+    """下载单张图片的线程任务，返回 (序号, 结果, 文件路径[, URL], 重试次数)
     结果: "downloaded" | "skipped" | "404" | "failed"
     """
     filename = f"{i:0{IMAGE_PAD_WIDTH}d}.webp"
@@ -342,16 +402,16 @@ def _download_one_image(i: int, manga_id: str, chapter_id: str, ch_dir: str) -> 
 
     # 跳过已下载的文件
     if os.path.exists(filepath) and os.path.getsize(filepath) > 0:
-        return (i, "skipped", filepath)
+        return (i, "skipped", filepath, 0)
 
-    result = download_image(url, filepath)
+    result, retries = download_image(url, filepath)
     if result == "ok":
-        return (i, "downloaded", filepath)
+        return (i, "downloaded", filepath, retries)
     else:
         # 清理下载失败的空/损坏文件
         if os.path.exists(filepath):
             os.remove(filepath)
-        return (i, result, filepath, url)  # result is "404" or "failed"
+        return (i, result, filepath, url, retries)  # result is "404" or "failed"
 
 
 def _retry_failed_images(failed_list: list, ch_dir: str, workers: int) -> int:
@@ -365,7 +425,7 @@ def _retry_failed_images(failed_list: list, ch_dir: str, workers: int) -> int:
 
     def _retry_one(item):
         i, filepath, url = item
-        result = download_image(url, filepath, extra_retry=2)
+        result, _ = download_image(url, filepath, extra_retry=2)
         if result == "ok":
             return (i, True, filepath)
         else:
@@ -407,7 +467,7 @@ def download_chapter(manga_id: str, chapter: dict, output_base: str,
     if is_probing:
         image_count = 500  # 未知数量时设置上限
 
-    stats = {"downloaded": 0, "skipped": 0, "failed": 0}
+    stats = {"downloaded": 0, "skipped": 0, "failed": 0, "retries": 0}
     not_found_count = 0  # 404不计入failed（图片确实不存在）
 
     # ── 串行模式（workers=1）──────────────────────────────
@@ -423,7 +483,8 @@ def download_chapter(manga_id: str, chapter: dict, output_base: str,
                 consecutive_404 = 0
                 continue
 
-            result = download_image(url, filepath)
+            result, retries = download_image(url, filepath)
+            stats["retries"] += retries
             if result == "ok":
                 stats["downloaded"] += 1
                 consecutive_404 = 0
@@ -484,6 +545,7 @@ def download_chapter(manga_id: str, chapter: dict, output_base: str,
                     with lock:
                         if result == "downloaded":
                             stats["downloaded"] += 1
+                            stats["retries"] += result_tuple[3]  # 重试次数
                             if verbose:
                                 size = os.path.getsize(filepath)
                                 print(f"    [OK] {filename} ({size:,} bytes)")
@@ -496,6 +558,7 @@ def download_chapter(manga_id: str, chapter: dict, output_base: str,
                                 print(f"    [404] {filename}")
                         elif result == "failed":
                             stats["failed"] += 1
+                            stats["retries"] += result_tuple[4]  # 重试次数
                             if verbose:
                                 print(f"    [SKIP] {filename}")
 
@@ -527,7 +590,8 @@ def download_chapter(manga_id: str, chapter: dict, output_base: str,
                 filename = f"{i:0{IMAGE_PAD_WIDTH}d}.webp"
                 filepath = os.path.join(ch_dir, filename)
                 url = f"https://img.uumanhua.xyz/bookimages/{manga_id}/{chapter['id']}/{i}.webp"
-                result = download_image(url, filepath)
+                result, retries = download_image(url, filepath)
+                stats["retries"] += retries
                 if result == "ok":
                     probe_found += 1
                     consecutive_probe_404 = 0
@@ -614,6 +678,10 @@ def download_chapter(manga_id: str, chapter: dict, output_base: str,
         missing = chapter["image_count"] - actual_files
         print(f"    [WARN] 预期 {chapter['image_count']} 张，实际 {actual_files} 张，缺失 {missing} 张")
 
+    # 重试汇总（仅在有重试时输出，避免无意义噪音）
+    if stats["retries"] > 0:
+        print(f"    [INFO] 重试 {stats['retries']} 次后完成")
+
     return stats
 
 
@@ -634,15 +702,23 @@ def download_manga(url: str, args) -> bool:
     if "/capter/" in url:
         # 单章节下载
         print(f"[INFO] 检测到章节页 URL，解析章节信息...")
-        chapter = fetch_chapter_detail(url)
+        try:
+            chapter = fetch_chapter_detail(url)
+        except Exception as e:
+            print(f"[ERR] 章节信息解析失败: {e}")
+            return False
         manga_id = chapter.get("manga_id") or parse_manga_id(url)
         chapters = [chapter]
         manga_name = chapter.get("manga_name") or f"manga_{manga_id}"
     else:
         # 目录页下载
         print(f"[INFO] 检测到目录页 URL，解析章节列表...")
-        manga_id = parse_manga_id(url)
-        chapters, manga_name = fetch_chapter_list(url)
+        try:
+            manga_id = parse_manga_id(url)
+            chapters, manga_name = fetch_chapter_list(url)
+        except Exception as e:
+            print(f"[ERR] 目录页解析失败: {e}")
+            return False
 
     print(f"[INFO] 漫画: {manga_name}, 共 {len(chapters)} 个章节, 章节并行: {chapter_workers}, 每章线程: {workers}, 总并发: {chapter_workers * workers}")
 
