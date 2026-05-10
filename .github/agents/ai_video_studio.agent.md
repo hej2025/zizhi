@@ -38,13 +38,13 @@ tools: [vscode, execute, read, agent, edit, search, web, todo]
 
 - 全链路使用 `projectId` + `traceId` 关联所有阶段产物。
 - 每阶段输出统一信封：`status`、`errorCode`、`summary`、`nextStep`。
-- 通用资源绑定：复用 `.claude/resources/douyin_video_common/` 下脚本与模板。
+- 通用资源绑定：复用 `.github/resources/douyin_video_common/` 下脚本与模板。
 - 子 Skill 实现细节详见各自 SKILL.md，本文件仅定义阶段间协调逻辑。
 
 ### 项目目录约定
 
 ```
-.claude/ai_videos/<projectId>/
+.github/ai_videos/<projectId>/
 ├── preprod/       # 前期包（脚本、分镜、人设）
 ├── assets/        # 生成素材（视频片段）
 ├── audio/         # 音频（dubbing/ bgm/ mix/）
@@ -203,4 +203,4 @@ ai_video_studio (主Agent — 编排调度)
   └─ Phase F: 交付 + 知识沉淀
 ```
 
-各模块详细定义见 `.claude/skills/` 对应 SKILL.md，共享枚举见 `.claude/skills/_shared/enums.md`。
+各模块详细定义见 `.github/skills/` 对应 SKILL.md，共享枚举见 `.github/skills/_shared/enums.md`。
