@@ -175,6 +175,12 @@
       "skillPath": "skills/docx/SKILL.md",
       "computedHash": "6962db07127ee540a56e4677f65576d0727668a1d67f7da8bc978f10791c2bfe"
     },
+    "find-skills": {
+      "source": "anthropics/skills",
+      "sourceType": "github",
+      "skillPath": "skills/find-skills/SKILL.md",
+      "computedHash": "1e85f6f9686e145aca4a124e3b704b9bbea9aa87e08515c1e352eee70f6e6e7a"
+    },
     "frontend-design": {
       "source": "anthropics/skills",
       "sourceType": "github",
@@ -228,6 +234,12 @@
       "sourceType": "github",
       "skillPath": "skills/slack-gif-creator/SKILL.md",
       "computedHash": "fab4fcfcaed371071069d61a3ab94dff15d10d36403ff269d147ea986cd98083"
+    },
+    "summarize": {
+      "source": "anthropics/skills",
+      "sourceType": "github",
+      "skillPath": "skills/summarize/SKILL.md",
+      "computedHash": "80cc11fe09b55e0ccd936a9b7f4dbb2820ff9d9480a4d5941c763fbe6e0e8903"
     },
     "template-skill": {
       "source": "anthropics/skills",
