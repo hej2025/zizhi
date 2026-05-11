@@ -24,11 +24,30 @@ Use it for:
 - querying async task results
 - reviewing saved task history
 
+## Runtime environment (this machine)
+
+On this machine (Ubuntu 20.04, GLIBC 2.31), the `dreamina` binary requires GLIBC ≥ 2.32.
+A compatibility wrapper has been installed to fix this:
+
+- **Wrapper script**: `/home/hej/Downloads/DevMaster_Tool/zizhi/.qoder/scripts/dreamina-run.sh`
+- **System shortcut**: `/home/hej/.local/bin/dreamina-run`
+
+The wrapper uses snap `core22`'s glibc (`/snap/core22/2411/`) as the dynamic linker.
+
+**Always use `dreamina-run` instead of `dreamina` directly.**
+All examples below that say `dreamina <cmd>` should be executed as `dreamina-run <cmd>`.
+
+If `dreamina-run` fails with a GLIBC error (e.g. snap revision changed), re-run:
+```bash
+find /snap/core22 -name "ld-linux-x86-64.so.2" 2>/dev/null | head -1
+```
+and update the path in `.qoder/scripts/dreamina-run.sh` and `/home/hej/.local/bin/dreamina-run`.
+
 ## Default workflow
 
 When using this CLI as an agent:
 
-1. Start with `dreamina -h`.
+1. Start with `dreamina-run -h`.
 2. Before using any command for real, run `dreamina <subcommand> -h`.
 3. Reuse the current login state unless the user explicitly asks you to `login`, `relogin`, or `logout`.
 4. Be explicit about whether you are only reading help, submitting a real task, or querying an existing task.
