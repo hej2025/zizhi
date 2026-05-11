@@ -157,6 +157,12 @@
       "skillPath": "skills/claude-api/SKILL.md",
       "computedHash": "fae9227ae5d58ed366bd225a35d8077100e8a0d056392b7d9165978d3ce4e860"
     },
+    "create-readme": {
+      "source": "github/awesome-copilot",
+      "sourceType": "github",
+      "skillPath": "skills/create-readme/SKILL.md",
+      "computedHash": "d0ece1b2164ce1376e4ab6e98d6ac079df3a2a94f5f02224362b6a1ce2516ae9"
+    },
     "doc-coauthoring": {
       "source": "anthropics/skills",
       "sourceType": "github",
